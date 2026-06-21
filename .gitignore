@@ -22,3 +22,11 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 tla_playground-*.tar
 
+# TLA+ toolchain: the model checker jar (download per toolchain.md) and TLC's
+# state-output artifacts. The .tla/.cfg specs themselves stay tracked.
+tla2tools.jar
+specs/states/
+specs/*.old
+specs/*.out
+specs/MC.*
+
