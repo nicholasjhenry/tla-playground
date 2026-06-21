@@ -13,25 +13,31 @@ This is a sandbox, not a library. Optimize for learning clarity, not reuse.
 
 - **Elixir 1.20.1** on **Erlang/OTP 29.0.2**, pinned in `mise.toml` (run `mise install`).
 - **PropCheck** — the property-testing library for the "port the verified design
-  down to Elixir" step. Not yet a dependency; add to `mix.exs` `deps/0` when the
-  first spec is ported.
-- **ExUnit** — built in; `mix test`.
+  down to Elixir" step. A dependency of each example that has reached the port —
+  see its `mix.exs` `deps/0` (e.g. `src/merge/mix.exs`).
+- **ExUnit** — built in; `mix test` (from inside an example dir).
 - **TLA+ toolchain** — Java (pinned `temurin-21` in `mise.toml`) plus
   `tla2tools.jar` (PlusCal translator + SANY parser + TLC model checker). The jar
-  is *not* vendored (gitignored at repo root); download once from
+  is *not* vendored (gitignored); download once per example into its dir from
   [tlaplus releases](https://github.com/tlaplus/tlaplus/releases). Run the
   toolchain through `mise exec -- java ...` so it uses the pinned JDK. VSCode TLA+
   extension or the Toolbox also work.
 
 ## Layout
 
-- `lib/tla_playground/` — Elixir modules (versioned algorithm modules, e.g.
-  `MyStruct.V1` / `MyStruct.V2`, plus their PropCheck stateful models).
-- `specs/` — **TLA+ artifacts live here**, not in `lib/`. One `MODULE Foo` per
-  `Foo.tla` (TLA+ requires the filename to match the module), its `Foo.cfg`
-  beside it. PlusCal lives in a comment block and `pcal.trans` rewrites the
-  `.tla` in place; TLC drops state-output dirs next to it — keep all that out of
-  the Elixir tree so `mix compile` stays clean.
+- `src/` — **each example is a self-contained subdirectory**, e.g. `src/merge/`
+  (the cart mixed-version walkthrough). Add a new example as a new `src/<name>/`.
+  Everything below is *per example*, scoped to its own dir — there is no
+  top-level Mix project. An example carries its own `mix.exs` / `mix.lock`, its
+  downloaded `tla2tools.jar`, a `GUIDE.md` (the worked tutorial), `README.md`,
+  optional `notebooks/`, and an `mprocs.yaml` to run its two nodes side by side.
+- `src/<name>/lib/` — Elixir modules (versioned algorithm modules and their nodes,
+  e.g. `Cart` / `NodeA` / `NodeB`, plus their PropCheck stateful models).
+- `src/<name>/specs/` — **TLA+ artifacts live here**, not in `lib/`. One
+  `MODULE Foo` per `Foo.tla` (TLA+ requires the filename to match the module),
+  its `Foo.cfg` beside it. PlusCal lives in a comment block and `pcal.trans`
+  rewrites the `.tla` in place; TLC drops state-output dirs next to it — keep all
+  that out of the Elixir tree so `mix compile` stays clean.
 - `.claude/tla-mixed-version-elixir/` — **the domain skill.** Read it before
   doing any TLA+ work here. It carries the template, a worked example that finds
   a real bug, the Elixir→TLA+ mapping, the toolchain commands, and the
@@ -62,11 +68,13 @@ combo, reach for them by name when relevant:
 
 ## Running the toolchain
 
-Translate PlusCal → TLA+, then model-check, from `specs/`:
+Translate PlusCal → TLA+, then model-check, from an example's `specs/` dir (the
+jar sits one level up, in the example root). For `src/merge`:
 
 ```sh
-java -cp tla2tools.jar pcal.trans MixedVersion.tla \
-  && java -cp tla2tools.jar tlc2.TLC -deadlock -config MixedVersion.cfg MixedVersion.tla
+cd src/merge/specs
+mise exec -- java -cp ../tla2tools.jar pcal.trans DiscountCart.tla \
+  && mise exec -- java -cp ../tla2tools.jar tlc2.TLC -deadlock -config DiscountCart.cfg DiscountCart.tla
 ```
 
 `-deadlock` silences the benign "deadlock" report at the terminal state — these
@@ -97,7 +105,9 @@ the real invariant violation first either way).
 
 ## Maintenance
 
-Personal sandbox, so light: bump the **Stack** section when `mise.toml` changes
-or PropCheck lands in `mix.exs`; refresh **Conventions** if a TLA+ pattern here
-keeps tripping the AI. The `.claude/tla-mixed-version-elixir` skill is the source
-of truth for the methodology — defer to it over this summary.
+Personal sandbox, so light: bump the **Stack** section when `mise.toml` changes;
+when a new example lands under `src/`, it's enough that **Layout** already
+describes the `src/<name>/` shape — no per-example entry needed here unless it
+breaks the mould. Refresh **Conventions** if a TLA+ pattern here keeps tripping
+the AI. The `.claude/tla-mixed-version-elixir` skill is the source of truth for
+the methodology — defer to it over this summary.
