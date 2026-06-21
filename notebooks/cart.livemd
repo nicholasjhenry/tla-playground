@@ -1,0 +1,159 @@
+# The Mixed-Version Cart, Hands-On
+
+```elixir
+Mix.install([{:propcheck, "~> 1.5"}])
+```
+
+## What This Notebook Is
+
+This is the **interactive companion** to `GUIDE.md`. The guide walks the whole
+verification pyramid (TLA+ → PropCheck → ExUnit); this notebook is the part that's
+better *run* than read — generating random carts and watching PropCheck shrink a
+failure to its smallest form.
+
+For the live two-node cluster demo, run `mprocs` from the repo (see `GUIDE.md`,
+Step 2) — distribution is clearer in a terminal than a notebook. Here we focus on
+the data structure and the property.
+
+## The Data Structure
+
+A cart is a plain map: `%{items: [integer], discount: integer}`. **v2** added the
+`discount` field; **v1** was written before it existed. This mirrors
+`lib/cart.ex` — kept inline so the notebook runs on its own.
+
+```elixir
+defmodule Cart do
+  # v1 algorithm: sums items. Never heard of :discount.
+  def v1_total(cart), do: Enum.sum(cart.items)
+
+  # v2 algorithm: applies the discount it added.
+  def v2_total(cart), do: Enum.sum(cart.items) - discount(cart)
+
+  # The forward-compatible merge (the design TLC proved safe): union the items,
+  # carry the larger discount. Because a cart is a map, the field rides along.
+  def merge(mine, peer) do
+    %{
+      items: Enum.uniq(mine.items ++ peer.items),
+      discount: max(discount(mine), discount(peer))
+    }
+  end
+
+  def discount(cart), do: Map.get(cart, :discount, 0)
+end
+```
+
+## Two Versions, One Cart
+
+The same cart, read by each version. v2 applies the discount; v1 has never heard
+of it. Run the cell — we should see **55** and **60**.
+
+```elixir
+cart = %{items: [10, 20, 30], discount: 5}
+
+%{
+  v2_total: Cart.v2_total(cart),
+  v1_total: Cart.v1_total(cart)
+}
+```
+
+That difference alone is benign — v1 just shows an undiscounted total for a while.
+The danger is whether the discount *survives* v1 handling the cart.
+
+## Does the Discount Survive a v1 Merge?
+
+Picture a v1 node folding this cart into its own (empty) copy and handing it back.
+With the forward-compatible `merge/2`, the discount is carried through — a v2 reader
+still gets the right total.
+
+```elixir
+v2_cart = %{items: [1], discount: 1}
+v1_cart = %{items: [], discount: 0}
+
+merged = Cart.merge(v1_cart, v2_cart)
+%{merged: merged, v2_total: Cart.v2_total(merged)}  # discount kept: 1 - 1 = 0
+```
+
+Now the bug the TLA+ spec found: a v1 that rebuilds the cart from only the fields it
+knows drops `:discount`. A v2 reader then computes the wrong total.
+
+```elixir
+lossy = %{items: Enum.uniq(v1_cart.items ++ v2_cart.items)}  # no :discount
+Cart.v2_total(lossy)  # 1, not 0 — the discount is gone
+```
+
+## The Property: MergeAgrees
+
+Two carts, merged in both directions, must recover the same total. Let's generate
+hundreds of random carts and check it.
+
+```elixir
+defmodule CartProps do
+  use PropCheck
+
+  # A well-formed cart: discount never exceeds what the items can cover.
+  def cart do
+    let items <- list(choose(1, 5)) do
+      let discount <- choose(0, length(items)) do
+        %{items: items, discount: discount}
+      end
+    end
+  end
+
+  # The broken v1 merge from the spec — drops :discount.
+  def lossy_v1_merge(mine, peer), do: %{items: Enum.uniq(mine.items ++ peer.items)}
+
+  def agreement_holds do
+    quickcheck(
+      forall {a, b} <- {cart(), cart()} do
+        Cart.v2_total(Cart.merge(a, b)) == Cart.v2_total(Cart.merge(b, a))
+      end
+    )
+  end
+
+  def lossy_v1_diverges do
+    quickcheck(
+      forall {a, b} <- {cart(), cart()} do
+        Cart.v2_total(lossy_v1_merge(a, b)) == Cart.v2_total(Cart.merge(b, a))
+      end
+    )
+  end
+end
+```
+
+Run the forward-compatible merge against the property — we should see a row of dots
+and `OK: Passed 100 test(s)`.
+
+```elixir
+CartProps.agreement_holds()
+```
+
+## Watch It Shrink
+
+Now swap in the lossy v1 merge and run the same property. PropCheck finds a failure,
+then **shrinks** it — repeatedly simplifying the counterexample until it's minimal.
+
+```elixir
+CartProps.lossy_v1_diverges()
+```
+
+The output ends on the smallest cart pair that still breaks:
+
+```
+Failed: After N test(s).
+{%{items: [...], discount: ...}, %{items: [...], discount: ...}}
+
+Shrinking ....(N time(s))
+{%{items: [], discount: 0}, %{items: [1], discount: 1}}
+```
+
+That shrunk pair — an empty v1 cart and a v2 cart with one item and a discount of 1
+— is the **exact state TLC reached** in `specs/DiscountCart.tla` (State 3). The model
+checker and the property-based tester, working completely differently, converge on
+the same minimal counterexample. That's the pyramid holding together.
+
+## Where to Go Next
+
+- `GUIDE.md` — the full walkthrough: TLA+ proof, the `mprocs` cluster demo, the fix
+- `specs/DiscountCart.tla` — the spec TLC checks, with both fixes in its footer
+- `test/cart_test.exs` — these same properties as the project's ExUnit suite
+- `.claude/tla-mixed-version-elixir/SKILL.md` — the methodology behind it all
