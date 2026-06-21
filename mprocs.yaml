@@ -1,0 +1,9 @@
+procs:
+  # OLD node — boots first, registers a receiver, runs the v1 algorithm.
+  node-b-v1:
+    shell: ROLE=b iex --name b@127.0.0.1 --cookie tla -S mix
+
+  # NEW node — builds a v2 cart and migrates it to node B.
+  # Retries the connection until B is up, so start order doesn't matter.
+  node-a-v2:
+    shell: ROLE=a iex --name a@127.0.0.1 --cookie tla -S mix
