@@ -16,9 +16,11 @@ This is a sandbox, not a library. Optimize for learning clarity, not reuse.
   down to Elixir" step. Not yet a dependency; add to `mix.exs` `deps/0` when the
   first spec is ported.
 - **ExUnit** — built in; `mix test`.
-- **TLA+ toolchain** — Java (JDK 11+) plus `tla2tools.jar` (PlusCal translator +
-  SANY parser + TLC model checker). Not vendored; download from
-  [tlaplus releases](https://github.com/tlaplus/tlaplus/releases). VSCode TLA+
+- **TLA+ toolchain** — Java (pinned `temurin-21` in `mise.toml`) plus
+  `tla2tools.jar` (PlusCal translator + SANY parser + TLC model checker). The jar
+  is *not* vendored (gitignored at repo root); download once from
+  [tlaplus releases](https://github.com/tlaplus/tlaplus/releases). Run the
+  toolchain through `mise exec -- java ...` so it uses the pinned JDK. VSCode TLA+
   extension or the Toolbox also work.
 
 ## Layout

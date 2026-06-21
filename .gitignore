@@ -29,4 +29,5 @@ specs/states/
 specs/*.old
 specs/*.out
 specs/MC.*
+specs/*_TTrace_*
 
