@@ -1,0 +1,180 @@
+# Schema Evolution Across a Version Boundary, Hands-On
+
+```elixir
+Mix.install([{:propcheck, "~> 1.5"}])
+```
+
+## What This Notebook Is
+
+This is the **interactive companion** to `GUIDE.md`. The guide walks the whole
+verification pyramid (TLA+ → PropCheck → ExUnit); this notebook is the part
+that's better *run* than read — generating random orders and watching PropCheck
+shrink a failure to its smallest form.
+
+For the live two-node baton-pass demo, run `mprocs` from the repo (see
+`GUIDE.md`, Step 2) — distribution is clearer in a terminal than a notebook.
+Here we focus on the data structure and the property.
+
+## The Data Structure
+
+A line item evolved from a bare scalar (`10` — price only, qty implicitly 1) to
+a map (`%{price: 10, qty: 2}`). **V2** introduced the quantity; **V1** predates
+it. A scalar has no room for the new fact, so the fix is not "migrate the field"
+but **promote the carrier**: make the element a map both versions can hold
+*before* the new field is given meaning. The `Order.Schema.lift/1` rule below is
+the one place "what a bare scalar means" lives, so the assumption can't drift.
+This mirrors `lib/order.ex` and `lib/order/schema.ex` — kept inline so the
+notebook runs on its own.
+
+```elixir
+defmodule Order.Schema do
+  # Lift one element to the canonical map. COMMITS to a meaning: the bare integer
+  # is the unit price, unrecorded quantity defaults to 1. Idempotent.
+  def lift(price) when is_integer(price), do: %{price: price, qty: 1}
+  def lift(%{price: _, qty: _} = item), do: item
+
+  def upgrade(items), do: Enum.map(items, &lift/1)
+end
+
+defmodule Order do
+  # THE ownership boundary: lift once on receipt; ops below then trust the shape.
+  def migrate_in(items), do: Order.Schema.upgrade(items)
+
+  # v2 (qty-aware) subtotal: price × qty.
+  def subtotal(items), do: Enum.sum(Enum.map(items, &(&1.price * &1.qty)))
+
+  # v1 (old) subtotal: sums prices, assumes qty == 1. Predates the field.
+  def subtotal_v1(items) do
+    Enum.sum(Enum.map(items, fn
+      n when is_integer(n) -> n
+      %{price: p} -> p
+    end))
+  end
+
+  def add(items, price, qty), do: items ++ [%{price: price, qty: qty}]
+
+  # The tolerant v1 edit: reach in for :price, CARRY the rest. qty rides along.
+  def set_price(items, i, price), do: List.update_at(items, i, &%{&1 | price: price})
+end
+```
+
+## Two Versions, One Order
+
+The same order, read by each version. V2 multiplies by quantity; V1 has never
+heard of it and sums prices. Run the cell — we should see **20** and **10**.
+
+```elixir
+order = Order.add([], 10, 2)
+
+%{
+  v2_subtotal: Order.subtotal(order),
+  v1_subtotal: Order.subtotal_v1(order)
+}
+```
+
+That difference alone is benign — V1 just shows a stale subtotal for a while.
+The danger is whether the quantity *survives* V1 handling the order.
+
+## Does the Quantity Survive a V1 Edit?
+
+Picture a V1 node editing the price and handing the order back. With the
+tolerant `set_price/3`, V1 reaches in for `:price` and carries `:qty` along — a
+V2 reader still gets the right total.
+
+```elixir
+edited = Order.set_price(order, 0, 8)
+%{edited: edited, v2_subtotal: Order.subtotal(edited)}  # qty kept: 8 × 2 = 16
+```
+
+Now the bug the TLA+ spec found: a V1 that **rebuilds** the item from only the
+fields it knows resets `qty` to 1. It typechecks, passes every V1 test, and
+silently halves the order.
+
+```elixir
+lossy = List.update_at(order, 0, fn _ -> %{price: 8, qty: 1} end)  # rebuild
+Order.subtotal(lossy)  # 8, not 16 — the quantity is gone
+```
+
+## The Property: qty Survives the Seam
+
+A price edit must never move a quantity. Let's generate hundreds of random
+orders and check it.
+
+```elixir
+defmodule OrderProps do
+  use PropCheck
+
+  def item do
+    let {price, qty} <- {choose(1, 5), choose(1, 3)} do
+      %{price: price, qty: qty}
+    end
+  end
+
+  def order, do: non_empty(list(item()))
+
+  # The broken v1 edit from the spec — rebuilds and resets qty to 1.
+  def lossy_set_price(items, i, price),
+    do: List.update_at(items, i, fn _ -> %{price: price, qty: 1} end)
+
+  def tolerant_survives do
+    quickcheck(
+      forall o <- order() do
+        qtys = Enum.map(o, & &1.qty)
+        Enum.map(Order.set_price(o, 0, 99), & &1.qty) == qtys
+      end
+    )
+  end
+
+  def lossy_clobbers do
+    quickcheck(
+      forall o <- order() do
+        qtys = Enum.map(o, & &1.qty)
+        Enum.map(lossy_set_price(o, 0, 99), & &1.qty) == qtys
+      end
+    )
+  end
+end
+```
+
+Run the tolerant edit against the property — we should see a row of dots and
+`OK: Passed 100 test(s)`.
+
+```elixir
+OrderProps.tolerant_survives()
+```
+
+## Watch It Shrink
+
+Now swap in the lossy rebuild and run the same property. PropCheck finds a
+failure, then **shrinks** it — repeatedly simplifying the counterexample until
+it's minimal.
+
+```elixir
+OrderProps.lossy_clobbers()
+```
+
+The output ends on the smallest order that still breaks — a single item whose
+`qty` is the smallest value that isn't 1:
+
+```
+Failed: After N test(s).
+[%{price: ..., qty: 2}]
+
+Shrinking ....(N time(s))
+[%{price: 1, qty: 2}]
+```
+
+That shrunk item — one line, `qty: 2` — is the **exact state TLC reached** in
+`specs/OrderItem.tla` (State 3, `item = [price |-> 9, qty |-> 1]`, down from
+`intendedQty = 2`). The model checker and the property-based tester, working
+completely differently, converge on the same minimal counterexample. That's the
+pyramid holding together.
+
+## Where to Go Next
+
+* `GUIDE.md` — the full walkthrough: TLA+ proof, the `mprocs` baton-pass demo, the fix
+* `specs/OrderItem.tla` — the spec TLC checks, with both fixes in its footer
+* `lib/order/ownership.ex` — the capability floor: the gate that's actually true
+* `test/order_test.exs` — these same properties as the project's ExUnit suite
+* `.claude/tla-mixed-version-elixir/SKILL.md` — the methodology behind it all
+```
